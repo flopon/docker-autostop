@@ -23,37 +23,38 @@ if [ "$1" = 'healthcheck' ]; then
   exit $?
 fi
 
-if [ "$1" = 'autoheal' ] && [ -e ${DOCKER_SOCK} ]; then
+if [ "$1" = 'autostop' ] && [ -e ${DOCKER_SOCK} ]; then
   
   # https://docs.docker.com/engine/api/v1.25/
 
-  # Set container selector
-  if [ "$AUTOHEAL_CONTAINER_LABEL" == "all" ]; then
-    labelFilter=""
-  else
-    labelFilter=",\"label\":\[\"${AUTOHEAL_CONTAINER_LABEL:=autoheal}=true\"\]"
+  # Set depends_on label
+  if [ -z "$AUTOSTOP_CONTAINER_LABEL" ]; then
+    AUTOSTOP_CONTAINER_LABEL="autostop.depends_on"
   fi
 
-  AUTOHEAL_START_PERIOD=${AUTOHEAL_START_PERIOD:=0}
-  echo "Monitoring containers for unhealthy status in ${AUTOHEAL_START_PERIOD} second(s)"
-  sleep ${AUTOHEAL_START_PERIOD}
+  AUTOSTOP_START_PERIOD=${AUTOSTOP_START_PERIOD:=0}
+  echo "Monitoring containers for dependency in ${AUTOSTOP_START_PERIOD} second(s)"
+  sleep ${AUTOSTOP_START_PERIOD}
 
   while true; do
-    sleep ${AUTOHEAL_INTERVAL:=5}
+    sleep ${AUTOSTOP_INTERVAL:=5}
     
-    apiUrl="http://localhost/containers/json?filters=\{\"health\":\[\"unhealthy\"\]${labelFilter}\}"
-    stopTimeout=".Labels[\"autoheal.stop.timeout\"] // ${AUTOHEAL_DEFAULT_STOP_TIMEOUT:-10}"
+    apiUrl="http://localhost/containers/json?filters=\{\"label\":\[\"${AUTOSTOP_CONTAINER_LABEL}\"\]\}"
+    stopTimeout=".Labels[\"autostop.timeout\"] // ${AUTOSTOP_DEFAULT_STOP_TIMEOUT:-10}"
     docker_curl "$apiUrl" | \
-    jq -r "foreach .[] as \$CONTAINER([];[]; \$CONTAINER | .Id, .Names[0], $stopTimeout )" | \
-    while read -r CONTAINER_ID && read -r CONTAINER_NAME && read -r TIMEOUT; do
+    jq -r "foreach .[] as \$CONTAINER([];[]; \$CONTAINER | .Id, .Names[0], .Labels.\"${AUTOSTOP_CONTAINER_LABEL}\", $stopTimeout )" | \
+    while read -r CONTAINER_ID && read -r CONTAINER_NAME && read -r REFCONTAINER_NAME && read -r TIMEOUT; do
         CONTAINER_SHORT_ID=${CONTAINER_ID:0:12}
         DATE=$(date +%d-%m-%Y" "%H:%M:%S)
         if [ "null" = "$CONTAINER_NAME" ]; then
-          echo "$DATE Container name of ($CONTAINER_SHORT_ID) is null, which implies container does not exist - don't restart"
+          echo "$DATE Container name of ($CONTAINER_SHORT_ID) is null, which implies container does not exist - don't need to stop"
         else
-          echo "$DATE Container ${CONTAINER_NAME} ($CONTAINER_SHORT_ID) found to be unhealthy - Restarting container now with ${TIMEOUT}s timeout"
-          docker_curl -f -XPOST "http://localhost/containers/${CONTAINER_ID}/restart?t=${TIMEOUT}" \
-            || echo "$DATE Restarting container $CONTAINER_SHORT_ID failed"
+          apiUrl="http://localhost/containers/json?filters=\{\"name\":\[\"${REFCONTAINER_NAME}\"\]\}"
+          if [ "$(docker_curl "$apiUrl")" = "[]" ]; then
+            echo "$DATE Container ${CONTAINER_NAME} ($CONTAINER_SHORT_ID) found to be dependant of missing container - Stopping container now with ${TIMEOUT}s timeout"
+            docker_curl -f -XPOST "http://localhost/containers/${CONTAINER_ID}/stop?t=${TIMEOUT}" \
+              || echo "$DATE Stopping container $CONTAINER_SHORT_ID failed"
+          fi
         fi
     done
   done
