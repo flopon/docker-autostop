@@ -5,7 +5,7 @@ Monitor and stop docker containers depending of a missing one.
 ## How to use
 ```bash
 docker run -d \
-    --name autoheal \
+    --name autostop \
     --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock \
     flopon/autostop
